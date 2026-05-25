@@ -148,23 +148,26 @@ def run_scheduled_collection() -> None:
 
 def _configure_logging() -> None:
     """loguru 설정: JSON 구조화 로그"""
-    log_dir = Path(__file__).parent.parent / "logs"
-    log_dir.mkdir(parents=True, exist_ok=True)
-
     logger.remove()
     logger.add(
         sys.stdout,
         level=settings.log_level,
         format="{time:YYYY-MM-DD HH:mm:ss} | {level} | {message}",
-        serialize=False,  # 콘솔 출력은 사람이 읽기 좋게
+        serialize=False,
     )
-    logger.add(
-        str(log_dir / "collector_{time:YYYY-MM-DD}.log"),
-        level=settings.log_level,
-        rotation="00:00",  # 자정에 로그 파일 교체
-        retention="30 days",
-        serialize=True,  # 파일은 JSON 구조화 로그
-    )
+    # 파일 로깅은 디렉토리 권한 없는 환경(Docker 등)에서 실패해도 계속 실행
+    try:
+        log_dir = Path(__file__).parent.parent / "logs"
+        log_dir.mkdir(parents=True, exist_ok=True)
+        logger.add(
+            str(log_dir / "collector_{time:YYYY-MM-DD}.log"),
+            level=settings.log_level,
+            rotation="00:00",
+            retention="30 days",
+            serialize=True,
+        )
+    except PermissionError:
+        logger.warning("파일 로깅 비활성화 — 권한 없음, stdout만 사용")
 
 
 def main() -> None:
