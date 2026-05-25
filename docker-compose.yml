@@ -1,0 +1,100 @@
+version: '3.9'
+
+services:
+  db:
+    image: timescale/timescaledb:latest-pg16
+    container_name: nps_tracker_db
+    environment:
+      POSTGRES_DB: nps_tracker
+      POSTGRES_USER: nps_user
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-localdevpassword}
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+      - ./docker/init-db.sql:/docker-entrypoint-initdb.d/init-db.sql:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U nps_user -d nps_tracker"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 30s
+
+  redis:
+    image: redis:7-alpine
+    container_name: nps_tracker_redis
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis_data:/data
+    command: redis-server --appendonly yes
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 3s
+      retries: 5
+
+  # FastAPI 백엔드 (개발 시 로컬 실행 권장 - uvicorn main:app --reload)
+  # `docker compose --profile api up -d` 로 실행
+  api:
+    build:
+      context: ./api
+      dockerfile: Dockerfile
+    container_name: nps_tracker_api
+    profiles: ["api"]
+    environment:
+      DATABASE_URL: postgresql+psycopg2://nps_user:${POSTGRES_PASSWORD:-localdevpassword}@db:5432/nps_tracker
+      REDIS_URL: redis://redis:6379/0
+      LOG_LEVEL: ${LOG_LEVEL:-INFO}
+      ALLOWED_ORIGINS: ${ALLOWED_ORIGINS:-http://localhost:3000}
+    ports:
+      - "8000:8000"
+    depends_on:
+      db:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    restart: unless-stopped
+
+  # Next.js 프론트엔드
+  # `docker compose --profile web up -d` 로 실행
+  web:
+    build:
+      context: ./web
+      dockerfile: Dockerfile
+    container_name: nps_tracker_web
+    profiles: ["web"]
+    environment:
+      NEXT_PUBLIC_API_URL: ${NEXT_PUBLIC_API_URL:-http://api:8000}
+    ports:
+      - "3000:3000"
+    depends_on:
+      - api
+    restart: unless-stopped
+
+  # 데이터 수집 서비스 (일별 스케줄러)
+  # `docker compose --profile collector up -d` 로 실행
+  collector:
+    build:
+      context: ./data-collector
+      dockerfile: Dockerfile
+    container_name: nps_tracker_collector
+    profiles: ["collector"]
+    environment:
+      DATABASE_URL: postgresql+psycopg2://nps_user:${POSTGRES_PASSWORD:-localdevpassword}@db:5432/nps_tracker
+      REDIS_URL: redis://redis:6379/0
+      DART_API_KEY: ${DART_API_KEY:-}
+      LOG_LEVEL: ${LOG_LEVEL:-INFO}
+    depends_on:
+      db:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    restart: unless-stopped
+    volumes:
+      - collector_logs:/app/logs
+
+volumes:
+  postgres_data:
+  redis_data:
+  collector_logs:

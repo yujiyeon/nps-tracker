@@ -1,0 +1,27 @@
+pykrx>=1.2.0
+OpenDartReader>=0.2.0
+
+# DB
+SQLAlchemy>=2.0.0
+psycopg2-binary>=2.9.0
+alembic>=1.13.0
+
+# 설정/검증
+pydantic>=2.0.0
+pydantic-settings>=2.0.0
+
+# 로깅
+loguru>=0.7.0
+
+# 데이터 처리
+pandas>=2.0.0
+numpy>=1.26.0
+
+# 안정성
+tenacity>=8.2.0
+
+# 스케줄러
+APScheduler>=3.10.4
+
+# 환경변수
+python-dotenv>=1.0.0
