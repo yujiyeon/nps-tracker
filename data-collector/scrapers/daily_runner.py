@@ -12,6 +12,7 @@
 import argparse
 import sys
 from datetime import date, datetime, timedelta
+from pathlib import Path
 from zoneinfo import ZoneInfo
 
 from apscheduler.schedulers.blocking import BlockingScheduler
@@ -147,6 +148,9 @@ def run_scheduled_collection() -> None:
 
 def _configure_logging() -> None:
     """loguru 설정: JSON 구조화 로그"""
+    log_dir = Path(__file__).parent.parent / "logs"
+    log_dir.mkdir(parents=True, exist_ok=True)
+
     logger.remove()
     logger.add(
         sys.stdout,
@@ -155,7 +159,7 @@ def _configure_logging() -> None:
         serialize=False,  # 콘솔 출력은 사람이 읽기 좋게
     )
     logger.add(
-        "logs/collector_{time:YYYY-MM-DD}.log",
+        str(log_dir / "collector_{time:YYYY-MM-DD}.log"),
         level=settings.log_level,
         rotation="00:00",  # 자정에 로그 파일 교체
         retention="30 days",
