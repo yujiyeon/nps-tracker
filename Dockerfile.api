@@ -1,0 +1,19 @@
+FROM python:3.11-slim
+
+WORKDIR /app
+
+RUN addgroup --system --gid 1001 appgroup && \
+    adduser --system --uid 1001 --gid 1001 appuser
+
+# 의존성 레이어
+COPY api/requirements.txt ./api/
+RUN pip install --no-cache-dir -r api/requirements.txt
+
+# api/ 와 backtest/ 모두 복사 — backtest_service.py가 ../backtest를 참조
+COPY --chown=appuser:appgroup api/ ./api/
+COPY --chown=appuser:appgroup backtest/ ./backtest/
+
+USER appuser
+WORKDIR /app/api
+EXPOSE 8000
+CMD ["sh", "-c", "uvicorn main:app --host 0.0.0.0 --port ${PORT:-8000}"]
