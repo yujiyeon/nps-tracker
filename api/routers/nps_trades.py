@@ -48,10 +48,21 @@ def nps_daily(
 
     result = get_nps_daily_summary(session, trade_date, limit, market)
     if not result:
-        raise HTTPException(
-            status_code=404,
-            detail=f"{trade_date} 날짜의 NPS 매매 데이터가 없습니다. 휴장일이거나 미수집 날짜입니다.",
-        )
+        # 요청 날짜에 데이터 없으면 가장 최근 수집일로 fallback (주말/미수집일 대응)
+        latest = get_latest_trade_date(session)
+        if latest and latest != trade_date:
+            logger.info(f"{trade_date} 데이터 없음 → {latest}로 fallback")
+            trade_date = latest
+            cache_key = f"nps:daily:{trade_date}:{limit}:{market or 'ALL'}:{latest_ohlcv}"
+            cached = cache_service.get_cached(cache_key)
+            if cached:
+                return NpsDailySummaryResponse(**cached)
+            result = get_nps_daily_summary(session, trade_date, limit, market)
+        if not result:
+            raise HTTPException(
+                status_code=404,
+                detail="수집된 NPS 매매 데이터가 없습니다.",
+            )
 
     cache_service.set_cached(cache_key, result.model_dump(), ttl=3600)
     return result

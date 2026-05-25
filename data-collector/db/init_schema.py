@@ -9,22 +9,27 @@ import sys
 
 from loguru import logger
 from sqlalchemy import text
-from sqlalchemy.exc import OperationalError, ProgrammingError
+from sqlalchemy.exc import OperationalError, ProgrammingError, NotSupportedError
 
 from db.models import Base
 from db.session import engine
 
 
-def _enable_timescaledb() -> None:
-    """TimescaleDB 확장 활성화 (docker/init-db.sql에서 이미 처리되지만 안전하게 재시도)"""
-    with engine.connect() as conn:
-        conn.execute(text("CREATE EXTENSION IF NOT EXISTS timescaledb CASCADE"))
-        conn.commit()
-    logger.info("TimescaleDB 확장 활성화 완료")
+def _enable_timescaledb() -> bool:
+    """TimescaleDB 확장 활성화. 미설치 환경(로컬 개발)에서는 건너뜀."""
+    try:
+        with engine.connect() as conn:
+            conn.execute(text("CREATE EXTENSION IF NOT EXISTS timescaledb CASCADE"))
+            conn.commit()
+        logger.info("TimescaleDB 확장 활성화 완료")
+        return True
+    except (OperationalError, ProgrammingError, NotSupportedError) as e:
+        logger.warning(f"TimescaleDB 미설치 - 일반 PostgreSQL 모드로 진행: {e}")
+        return False
 
 
 def _create_hypertables() -> None:
-    """daily_ohlcv, nps_daily_trades를 TimescaleDB hypertable로 변환"""
+    """daily_ohlcv, nps_daily_trades를 TimescaleDB hypertable로 변환. 미설치 시 건너뜀."""
     hypertable_cmds = [
         (
             "daily_ohlcv",
@@ -50,9 +55,13 @@ def _create_hypertables() -> None:
 
     with engine.connect() as conn:
         for table_name, sql in hypertable_cmds:
-            conn.execute(text(sql))
-            conn.commit()
-            logger.info(f"hypertable 생성 완료: {table_name}")
+            try:
+                conn.execute(text(sql))
+                conn.commit()
+                logger.info(f"hypertable 생성 완료: {table_name}")
+            except (OperationalError, ProgrammingError) as e:
+                conn.rollback()
+                logger.warning(f"hypertable 건너뜀 ({table_name}): {e}")
 
 
 def _set_compression_policies() -> None:
@@ -126,14 +135,18 @@ def init_schema() -> None:
     """전체 스키마 초기화 (순서 중요: extensions → tables → hypertables → indexes)"""
     logger.info("스키마 초기화 시작")
 
-    _enable_timescaledb()
+    has_timescale = _enable_timescaledb()
 
     # SQLAlchemy ORM 정의 기반 테이블 생성
     Base.metadata.create_all(engine)
     logger.info("테이블 생성 완료")
 
-    _create_hypertables()
-    _set_compression_policies()
+    if has_timescale:
+        _create_hypertables()
+        _set_compression_policies()
+    else:
+        logger.info("TimescaleDB 없음 - hypertable/압축 정책 건너뜀 (기능에는 영향 없음)")
+
     _create_indexes()
 
     logger.info("스키마 초기화 완료")
