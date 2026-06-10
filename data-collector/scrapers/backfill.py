@@ -17,7 +17,7 @@ from zoneinfo import ZoneInfo
 
 import pandas as pd
 from loguru import logger
-from sqlalchemy import select
+from sqlalchemy import select, text
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.orm import Session
 
@@ -268,15 +268,26 @@ def recalculate_signals_bulk(session: Session) -> None:
         axis=1,
     )
 
-    # bulk update
-    update_records = merged[
-        ["trade_date", "ticker", "consecutive_buy_days", "buy_intensity_pct"]
-    ].to_dict("records")
+    # 임시 테이블에 적재 후 UPDATE ... FROM으로 일괄 갱신
+    # (TimescaleDB hypertable에서 bulk_update_mappings의 rowcount 불일치 회피)
+    update_df = merged[["trade_date", "ticker", "consecutive_buy_days", "buy_intensity_pct"]].copy()
+    update_df["trade_date"] = update_df["trade_date"].dt.date
+    update_df.to_sql("_signal_temp", session.bind, if_exists="replace", index=False)
 
-    session.bulk_update_mappings(NpsDailyTrade, update_records)  # type: ignore[arg-type]
+    # TimescaleDB 압축 청크 DML 제한 해제 (기본 100,000행, 전체 기간 업데이트 시 초과)
+    session.execute(text("SET timescaledb.max_tuples_decompressed_per_dml_transaction = 0"))
+    session.execute(text("""
+        UPDATE nps_daily_trades t
+        SET consecutive_buy_days = s.consecutive_buy_days,
+            buy_intensity_pct    = s.buy_intensity_pct
+        FROM _signal_temp s
+        WHERE t.trade_date = s.trade_date
+          AND t.ticker     = s.ticker
+    """))
+    session.execute(text("DROP TABLE IF EXISTS _signal_temp"))
     session.flush()
 
-    logger.info(f"시그널 지표 재계산 완료: {len(update_records)}행 갱신")
+    logger.info(f"시그널 지표 재계산 완료: {len(update_df)}행 갱신")
 
 
 # ──────────────────────────────────────────────
