@@ -21,6 +21,8 @@ from sqlalchemy import text
 from sqlalchemy.orm import Session
 
 from backtest.strategies import FollowStrategy
+from backtest.candidates import CandidateFilter, build_nps_candidates
+from backtest import rl_state
 
 
 # ──────────────────────────────────────────────
@@ -104,9 +106,9 @@ def _load_data(
     )
     ohlcv_df["trade_date"] = ohlcv_df["trade_date"].dt.date
 
-    # 종목 마스터 (생존편향 방지: delisting_date 포함)
+    # 종목 마스터 (생존편향 방지: delisting_date 포함, 시장 필터: market 포함)
     stocks_df = pd.read_sql(
-        text("SELECT ticker, delisting_date FROM stocks"),
+        text("SELECT ticker, name, market, delisting_date FROM stocks"),
         session.bind,
         parse_dates=["delisting_date"],
     )
@@ -148,8 +150,14 @@ def _build_lookups(
     for row in stocks_df.itertuples():
         dl = row.delisting_date
         delisting[row.ticker] = dl.date() if pd.notna(dl) and dl is not None else None
-
-    return nps_by_date, ohlcv_lookup, delisting
+    stock_names: dict[str, str] = {}
+    for row in stocks_df.itertuples():
+        stock_names[row.ticker] = row.name
+    # 종목: {ticker: market} (매매동향 페이지의 시장 필터와 일치시키기 위함)
+    stock_markets: dict[str, str] = {}
+    for row in stocks_df.itertuples():
+        stock_markets[row.ticker] = getattr(row, "market", None)
+    return nps_by_date, ohlcv_lookup, delisting, stock_names, stock_markets
 
 
 # ──────────────────────────────────────────────
@@ -185,6 +193,416 @@ def _get_signals(
 
     return [t for t, _ in sorted(candidates, key=lambda x: -x[1])]
 
+def _get_top_nps_tickers(
+    nps_by_date: dict,
+    signal_date: date,
+    strategy: FollowStrategy,
+    top_n: int = 50,
+    ticker_market: dict | None = None,
+    allowed_market: str | None = None,
+) -> list[str]:
+    """
+    매매동향 화면과 동일하게 NPS 순매수금액 상위 종목 목록 반환.
+    학습(rl_env)과 동일한 단일 소스(build_nps_candidates)를 사용한다.
+    """
+    return build_nps_candidates(
+        nps_by_date=nps_by_date,
+        trade_date=signal_date,
+        f=CandidateFilter.from_strategy(strategy),
+        top_n=top_n,
+        ticker_market=ticker_market,
+        allowed_market=allowed_market,
+    )
+
+def _build_mdp_state(
+    signals: list[str],
+    nps_by_date: dict,
+    ohlcv_lookup: dict,
+    signal_date: date,
+    price_date: date,
+    positions: dict,
+    cash: float,
+    holding_days_map: dict,
+    initial_capital: float,
+    max_positions: int,
+    holding_period: int,
+    top_k: int = 50,
+) -> tuple[np.ndarray, list[str]]:
+    """
+    [방향 A / MDP] 포트폴리오를 포함한 상태 생성 (rl_state.build_state 사용).
+    학습(rl_env)과 동일한 단일 소스로 상태를 만들어 train/serve 일관성을 보장한다.
+    candidates 순서 = signals(매매동향) 순서.
+    """
+    cands = []
+    for ticker in signals:
+        nps = nps_by_date.get(signal_date, {}).get(ticker)
+        if not nps:
+            continue
+        oh = ohlcv_lookup.get((price_date, ticker)) or {}
+        cands.append({
+            "ticker": ticker,
+            "net_buy_amount": nps.get("net_buy_amount"),
+            "consecutive_buy_days": nps.get("consecutive_buy_days"),
+            "buy_intensity_pct": nps.get("buy_intensity_pct"),
+            "open": oh.get("open", 0.0),
+            "close": oh.get("close", 0.0),
+        })
+        if len(cands) >= top_k:
+            break
+    while len(cands) < top_k:
+        cands.append({"ticker": "NONE"})
+
+    # build_state 용 포트폴리오 view (현재 종가 포함)
+    port = {}
+    for ticker, pos in (positions or {}).items():
+        oh = ohlcv_lookup.get((price_date, ticker)) or {}
+        entry = getattr(pos, "cost_price", None)
+        if entry is None and isinstance(pos, dict):
+            entry = pos.get("entry_price")
+        port[ticker] = {
+            "entry_price": entry,
+            "holding_days": (holding_days_map or {}).get(ticker, 0),
+            "cur_close": oh.get("close", entry),
+        }
+
+    state = rl_state.build_state(
+        candidates=cands,
+        portfolio=port,
+        cash=cash,
+        initial_capital=initial_capital,
+        max_positions=max_positions,
+        holding_period=holding_period,
+        top_k=top_k,
+    )
+    return state, [c["ticker"] for c in cands]
+
+
+def _dqn_q_network(agent):
+    """
+    DQNAgent 객체에서 Q 네트워크(nn.Module)를 속성 이름과 무관하게 찾아 반환.
+    target 네트워크는 피하고 online/policy 네트워크를 우선한다.
+    """
+    try:
+        import torch.nn as nn
+    except Exception:
+        return None
+
+    modules = [
+        (name, v) for name, v in vars(agent).items()
+        if isinstance(v, nn.Module)
+    ]
+    if not modules:
+        return None
+    for name, v in modules:
+        if "target" not in name.lower():
+            return v
+    return modules[0][1]
+
+
+def _build_dqn_state(
+    signals: list[str],
+    nps_by_date: dict,
+    ohlcv_lookup: dict,
+    signal_date: date,
+    today: date,
+    max_candidates: int,
+) -> tuple[np.ndarray, list[str]]:
+    """
+    [기존 / bandit] DQN 입력 state 생성 (후보 50 × 5피처 = 250차원).
+    signals 순서를 그대로 좌석표로 사용하고, 부족분은 NONE 패딩.
+    """
+    candidates = []
+    for ticker in signals:
+        nps = nps_by_date.get(signal_date, {}).get(ticker)
+        if not nps:
+            continue
+        candidates.append(ticker)
+        if len(candidates) >= max_candidates:
+            break
+
+    features = []
+    for ticker in candidates:
+        nps = nps_by_date[signal_date][ticker]
+        ohlcv = ohlcv_lookup.get((today, ticker)) or {}
+        features.extend([
+            float(nps.get("net_buy_amount") or 0),
+            float(nps.get("consecutive_buy_days") or 0),
+            float(nps.get("buy_intensity_pct") or 0),
+            float(ohlcv.get("open") or 0),
+            float(ohlcv.get("close") or 0),
+        ])
+
+    feature_size = 5
+    while len(candidates) < max_candidates:
+        candidates.append("NONE")
+        features.extend([0.0] * feature_size)
+
+    state = np.array(features, dtype=np.float32)
+    return state, candidates
+
+
+def _select_valid_action(agent, state: np.ndarray, valid_count: int) -> int:
+    """
+    [기존 / bandit] 유효 후보(0 ~ valid_count-1) 안에서만 선택(action masking).
+    빈자리(NONE) 슬롯은 -inf 로 막는다. Q망 못 찾으면 폴백(범위 밖이면 0번).
+    """
+    if valid_count <= 0:
+        return 0
+
+    net = _dqn_q_network(agent)
+    if net is None:
+        action = agent.select_action(state)
+        return action if action < valid_count else 0
+
+    try:
+        import torch
+        net.eval()
+        with torch.no_grad():
+            t = torch.as_tensor(state, dtype=torch.float32).unsqueeze(0)
+            q = net(t).squeeze(0).cpu().numpy()
+        masked = q.astype(np.float64).copy()
+        masked[valid_count:] = -np.inf
+        return int(np.argmax(masked))
+    except Exception:
+        action = agent.select_action(state)
+        return action if action < valid_count else 0
+
+
+def _select_mdp_action(agent, state: np.ndarray, valid_count: int, top_k: int) -> int:
+    """
+    [방향 A / MDP] 유효 후보(0 ~ valid_count-1)와 관망(skip = top_k)만 허용하고
+    나머지(빈 후보 슬롯)는 -inf 로 마스킹한다.
+
+    Q 네트워크를 못 찾으면 agent.select_action 으로 폴백하되,
+    유효 범위를 벗어나면 관망(skip)으로 보정한다.
+    """
+    skip = rl_state.skip_action(top_k)
+
+    net = _dqn_q_network(agent)
+    if net is None:
+        a = agent.select_action(state)
+        return a if (a == skip or a < valid_count) else skip
+
+    try:
+        import torch
+        net.eval()
+        with torch.no_grad():
+            t = torch.as_tensor(state, dtype=torch.float32).unsqueeze(0)
+            q = net(t).squeeze(0).cpu().numpy().astype(np.float64)
+
+        mask = np.full_like(q, -np.inf)
+        n = min(max(valid_count, 0), top_k)
+        if n > 0:
+            mask[:n] = q[:n]
+        if skip < len(q):
+            mask[skip] = q[skip]          # 관망은 항상 선택 가능
+        return int(np.argmax(mask))
+    except Exception:
+        a = agent.select_action(state)
+        return a if (a == skip or a < valid_count) else skip
+
+
+def _recommend_context(strategy, session, target_date, market):
+    """추천 공통 전처리: 데이터 로드 + 기준일 결정 + 후보(signals) 산출."""
+    nps_df, ohlcv_df, stocks_df = _load_data(
+        session=session,
+        from_date=target_date - timedelta(days=60),
+        to_date=target_date,
+    )
+    nps_days = sorted(nps_df[nps_df["trade_date"] <= target_date]["trade_date"].unique())
+    ohlcv_days = sorted(ohlcv_df[ohlcv_df["trade_date"] <= target_date]["trade_date"].unique())
+    if not nps_days:
+        return None
+
+    signal_date = nps_days[-1]                                  # 페이지의 trade_date 와 동일
+    price_date = ohlcv_days[-1] if ohlcv_days else signal_date  # 페이지의 close_date 와 동일
+
+    nps_by_date, ohlcv_lookup, delisting, stock_names, stock_markets = _build_lookups(
+        nps_df, ohlcv_df, stocks_df,
+    )
+    signals = _get_top_nps_tickers(
+        nps_by_date=nps_by_date,
+        signal_date=signal_date,
+        strategy=strategy,
+        top_n=50,
+        ticker_market=stock_markets,
+        allowed_market=market,
+    )
+    return {
+        "signal_date": signal_date,
+        "price_date": price_date,
+        "nps_by_date": nps_by_date,
+        "ohlcv_lookup": ohlcv_lookup,
+        "stock_names": stock_names,
+        "signals": signals,
+    }
+
+
+def predict_one_day(
+    strategy,
+    session,
+    target_date,
+    agent,
+    market: str | None = None,
+):
+    """
+    [기존 / bandit] 오늘의 추천종목.
+    매매동향(필터·시장 적용) 후보 중 DQN(250차원)이 1개를 선택. 관망 개념 없음.
+    """
+    ctx = _recommend_context(strategy, session, target_date, market)
+    if ctx is None:
+        return {
+            "trade_date": str(target_date),
+            "recommended_ticker": None,
+            "message": "기준일 이전의 NPS 매매 데이터가 없습니다.",
+        }
+
+    signal_date, price_date = ctx["signal_date"], ctx["price_date"]
+    nps_by_date, ohlcv_lookup = ctx["nps_by_date"], ctx["ohlcv_lookup"]
+    stock_names, signals = ctx["stock_names"], ctx["signals"]
+
+    state, candidates = _build_dqn_state(
+        signals=signals,
+        nps_by_date=nps_by_date,
+        ohlcv_lookup=ohlcv_lookup,
+        signal_date=signal_date,
+        today=price_date,
+        max_candidates=50,
+    )
+
+    valid_count = len([c for c in candidates if c != "NONE"])
+    if valid_count == 0:
+        return {
+            "request_date": str(target_date),
+            "trade_date": str(signal_date),
+            "close_date": str(price_date),
+            "market": market,
+            "recommended_ticker": None,
+            "recommended_name": None,
+            "message": "조건을 만족하는 추천 후보 종목이 없습니다.",
+        }
+
+    valid_candidates = [c for c in candidates if c != "NONE"]
+    action = _select_valid_action(agent, state, valid_count)
+    selected_ticker = candidates[action]
+
+    logger.info(
+        f"[RECOMMEND] signal_date={signal_date}, price_date={price_date}, "
+        f"market={market}, action={action}, ticker={selected_ticker}, "
+        f"candidate_count={valid_count}, candidates={valid_candidates[:10]}"
+    )
+
+    ohlcv = ohlcv_lookup.get((price_date, selected_ticker))
+
+    return {
+        "request_date": str(target_date),
+        "trade_date": str(signal_date),
+        "close_date": str(price_date),
+        "market": market,
+        "recommended_ticker": selected_ticker,
+        "recommended_name": stock_names.get(selected_ticker),
+        "action": int(action),
+        "candidates": valid_candidates,
+        "entry_price": ohlcv["open"] if ohlcv else None,
+        "holding_period_days": strategy.holding_period_days,
+        "message": "매매동향 상위 50개 종목 중 DQN이 이 종목을 선택했습니다.",
+    }
+
+
+def predict_one_day_mdp(
+    strategy,
+    session,
+    target_date,
+    agent,
+    market: str | None = None,
+):
+    """
+    [방향 A / MDP] 포트폴리오 DQN(403차원, 관망 포함) 기반 오늘의 추천.
+    '현금만 있고 보유 종목이 없는 상태에서 오늘 무엇을 살까'를 묻는다.
+    DQN이 관망(skip)을 고르면 '추천 없음'을 반환한다.
+    """
+    ctx = _recommend_context(strategy, session, target_date, market)
+    if ctx is None:
+        return {
+            "trade_date": str(target_date),
+            "recommended_ticker": None,
+            "mode": "mdp",
+            "message": "기준일 이전의 NPS 매매 데이터가 없습니다.",
+        }
+
+    signal_date, price_date = ctx["signal_date"], ctx["price_date"]
+    nps_by_date, ohlcv_lookup = ctx["nps_by_date"], ctx["ohlcv_lookup"]
+    stock_names, signals = ctx["stock_names"], ctx["signals"]
+
+    state, candidates = _build_mdp_state(
+        signals=signals,
+        nps_by_date=nps_by_date,
+        ohlcv_lookup=ohlcv_lookup,
+        signal_date=signal_date,
+        price_date=price_date,
+        positions={},                      # 단일 추천: 빈 포트폴리오 가정
+        cash=strategy.initial_capital,
+        holding_days_map={},
+        initial_capital=strategy.initial_capital,
+        max_positions=strategy.max_positions,
+        holding_period=strategy.holding_period_days,
+        top_k=50,
+    )
+
+    valid_count = len([c for c in candidates if c != "NONE"])
+    if valid_count == 0:
+        return {
+            "request_date": str(target_date),
+            "trade_date": str(signal_date),
+            "close_date": str(price_date),
+            "market": market,
+            "mode": "mdp",
+            "recommended_ticker": None,
+            "recommended_name": None,
+            "message": "조건을 만족하는 추천 후보 종목이 없습니다.",
+        }
+
+    valid_candidates = [c for c in candidates if c != "NONE"]
+    action = _select_mdp_action(agent, state, valid_count, top_k=50)
+
+    logger.info(
+        f"[RECOMMEND-MDP] signal_date={signal_date}, price_date={price_date}, "
+        f"market={market}, action={action}, "
+        f"candidate_count={valid_count}, candidates={valid_candidates[:10]}"
+    )
+
+    # 관망(skip)을 선택한 경우 → 추천 없음
+    if action >= 50 or candidates[action] == "NONE":
+        return {
+            "request_date": str(target_date),
+            "trade_date": str(signal_date),
+            "close_date": str(price_date),
+            "market": market,
+            "mode": "mdp",
+            "recommended_ticker": None,
+            "recommended_name": None,
+            "action": int(action),
+            "candidates": valid_candidates,
+            "message": "포트폴리오 DQN이 오늘은 관망을 선택했습니다 (추천 없음).",
+        }
+
+    selected_ticker = candidates[action]
+    ohlcv = ohlcv_lookup.get((price_date, selected_ticker))
+
+    return {
+        "request_date": str(target_date),
+        "trade_date": str(signal_date),
+        "close_date": str(price_date),
+        "market": market,
+        "mode": "mdp",
+        "recommended_ticker": selected_ticker,
+        "recommended_name": stock_names.get(selected_ticker),
+        "action": int(action),
+        "candidates": valid_candidates,
+        "entry_price": ohlcv["open"] if ohlcv else None,
+        "holding_period_days": strategy.holding_period_days,
+        "message": "포트폴리오 DQN(방향 A)이 매매동향 후보 중 이 종목을 선택했습니다.",
+    }
 
 # ──────────────────────────────────────────────
 # 포지션 관리 헬퍼
@@ -280,6 +698,9 @@ def run_backtest(
     session: Session,
     from_date: date,
     to_date: date,
+    agent=None,
+    use_dqn: bool = False,
+    market: str | None = None,
 ) -> BacktestResult:
     """
     연기금 추종 전략 백테스팅 실행.
@@ -313,7 +734,7 @@ def run_backtest(
     if nps_df.empty or ohlcv_df.empty:
         raise ValueError(f"백테스팅 기간({from_date}~{to_date})에 데이터가 없습니다. 백필 완료 여부를 확인하세요.")
 
-    nps_by_date, ohlcv_lookup, delisting = _build_lookups(nps_df, ohlcv_df, stocks_df)
+    nps_by_date, ohlcv_lookup, delisting, stock_names, stock_markets = _build_lookups(nps_df, ohlcv_df, stocks_df)
 
     # 2. 영업일 목록 (OHLCV 기준)
     trading_days = sorted(
@@ -325,6 +746,9 @@ def run_backtest(
 
     if len(trading_days) < strategy.entry_lag_days + 1:
         raise ValueError("백테스팅 기간이 너무 짧습니다.")
+
+    # 영업일 → 인덱스 (보유일수 계산용)
+    day_pos: dict = {d: i for i, d in enumerate(trading_days)}
 
     # entry_lag_days → signal_date 매핑 (look-ahead bias 방지의 핵심)
     lag_map: dict[date, date] = {
@@ -386,9 +810,42 @@ def run_backtest(
         # ── 4b. 신규 시그널 확인 및 포지션 진입 ───────────────────────────
         signal_date = lag_map.get(today)
         if signal_date:
-            signals = _get_signals(nps_by_date, signal_date, strategy)
+            # DQN 방식 (기존 / bandit)
+            if use_dqn and agent is not None:
+                signals = _get_top_nps_tickers(
+                    nps_by_date=nps_by_date,
+                    signal_date=signal_date,
+                    strategy=strategy,
+                    top_n=50,
+                )
+                state, candidates = _build_dqn_state(
+                    signals=signals,
+                    nps_by_date=nps_by_date,
+                    ohlcv_lookup=ohlcv_lookup,
+                    signal_date=signal_date,
+                    today=today,
+                    max_candidates=50,
+                )
 
-            for ticker in signals:
+                valid_count = len([c for c in candidates if c != "NONE"])
+                if valid_count == 0:
+                    selected_tickers = []
+                else:
+                    action = _select_valid_action(agent, state, valid_count)
+                    selected_ticker = candidates[action]
+                    logger.info(
+                        f"[DQN] date={today} action={action} ticker={selected_ticker}"
+                    )
+                    selected_tickers = [] if selected_ticker == "NONE" else [selected_ticker]
+
+            # 기존 룰 기반 방식
+            else:
+                signals = _get_signals(nps_by_date, signal_date, strategy)
+                selected_tickers = signals
+
+            for ticker in selected_tickers:
+                if ticker == "NONE":
+                    continue
                 if ticker in positions:
                     continue
                 if len(positions) >= strategy.max_positions:

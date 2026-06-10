@@ -28,6 +28,9 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
               <a href="/backtest" className="text-sm text-gray-600 hover:text-gray-900">
                 백테스팅
               </a>
+              <a href="/recommend" className="text-sm text-gray-600 hover:text-gray-900">
+                오늘의 추천종목
+              </a>
               <span className="ml-auto text-xs text-gray-400">
                 데이터: KRX &quot;연기금 등&quot; | 장 마감 후(T+1) 기준
               </span>

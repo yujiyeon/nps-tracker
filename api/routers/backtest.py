@@ -3,13 +3,18 @@
 
 POST /api/backtest          → job_id 반환 (즉시, 비동기 실행)
 GET  /api/backtest/{job_id} → 결과 폴링
+POST /api/backtest/recommend → 오늘의 추천종목 (날짜 불필요)
 """
 import uuid
 
 from fastapi import APIRouter, HTTPException
 from loguru import logger
 
-from schemas.backtest import BacktestRequest, BacktestResultResponse
+from schemas.backtest import (
+    BacktestRequest,
+    BacktestResultResponse,
+    RecommendRequest,
+)
 from services import backtest_service, cache_service
 
 router = APIRouter(prefix="/api/backtest", tags=["backtest"])
@@ -51,3 +56,15 @@ def get_backtest_result(job_id: str) -> BacktestResultResponse:
         raise HTTPException(status_code=404, detail=f"백테스팅 job을 찾을 수 없습니다: {job_id}")
 
     return BacktestResultResponse(**cached)
+
+
+@router.post("/recommend")
+def recommend(req: RecommendRequest):
+    """[기존 / bandit] 오늘의 추천종목. 기간 파라미터 없이 오늘 기준 1개 종목 선택."""
+    return backtest_service.get_today_recommendation(req.model_dump())
+
+
+@router.post("/recommend-mdp")
+def recommend_mdp(req: RecommendRequest):
+    """[방향 A / MDP] 포트폴리오 DQN 기반 오늘의 추천. 관망 시 추천 없음 반환 가능."""
+    return backtest_service.get_portfolio_recommendation(req.model_dump())

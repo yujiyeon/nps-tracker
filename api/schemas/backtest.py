@@ -18,6 +18,23 @@ class BacktestRequest(BaseModel):
     transaction_cost_pct: float = Field(default=0.25, ge=0.0, le=2.0)
 
 
+class RecommendRequest(BaseModel):
+    """
+    오늘의 추천종목 요청 파라미터.
+
+    추천은 '오늘 1개 종목'을 고르는 단발 작업이므로 기간(from_date/to_date)이
+    필요 없고, 포지션수·초기자본·거래비용·진입지연 같은 '기간 시뮬레이션' 개념도
+    의미가 없다. 실제 추천에 영향을 주는 후보 필터 3개 + 보유기간(표시용) + 시장만 받는다.
+    """
+
+    min_consecutive_days: int = Field(default=3, ge=1, le=30)
+    min_net_buy_amount: int = Field(default=1_000_000_000, ge=0)
+    min_buy_intensity_pct: float = Field(default=0.1, ge=0.0)
+    holding_period_days: int = Field(default=20, ge=1, le=250)
+    # 매매동향 페이지와 동일한 시장으로 후보를 거르고 싶을 때 사용 (예: "KOSPI"/"KOSDAQ")
+    market: str | None = None
+
+
 class EquityPoint(BaseModel):
     trade_date: date
     equity: int
