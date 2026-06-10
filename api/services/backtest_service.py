@@ -22,8 +22,12 @@ if str(_PROJECT_ROOT) not in sys.path:
 from backtest.engine import run_backtest, predict_one_day, predict_one_day_mdp  # noqa: E402
 from backtest.strategies import FollowStrategy  # noqa: E402
 
-from backtest.dqn_agent import DQNAgent
-from backtest import rl_state
+try:
+    from backtest.dqn_agent import DQNAgent
+    from backtest import rl_state
+    _TORCH_AVAILABLE = True
+except ImportError:
+    _TORCH_AVAILABLE = False
 
 # DQN 후보 수 (rl_env / engine 과 동일해야 함)
 TOP_K = 50
