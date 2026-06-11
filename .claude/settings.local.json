@@ -4,7 +4,7 @@
       "Bash(railway whoami *)",
       "Bash(railway add *)",
       "Bash(python3 -c ' *)",
-      "Bash(DATABASE_URL=postgresql+psycopg2://postgres:hqWbFBxErZlnDyrIbdjAseoJXgKOqScg@kodama.proxy.rlwy.net:16926/railway KRX_ID=jisub3054 KRX_PW=Gkswltjq1! .venv/bin/python -m scrapers.backfill --years 1)",
+      "Bash(DATABASE_URL=postgresql+psycopg2://postgresql://postgres:zkWczCNhrDOdLQaaQWihgVeFEtUOjfqa@postgres.railway.internal:5432/railway KRX_ID=jisub3054 KRX_PW=Gkswltjq1! .venv/bin/python -m scrapers.backfill --years 1)",
       "Bash(tee /tmp/railway_backfill.log)"
     ]
   }
