@@ -8,7 +8,7 @@ from fastapi.responses import JSONResponse
 from loguru import logger
 
 from config import settings
-from routers import backtest, nps_trades, stocks
+from routers import backtest, nps_trades, stocks, investor_recommendation
 
 # ──────────────────────────────────────────────
 # 로깅 설정
@@ -64,7 +64,7 @@ async def log_requests(request: Request, call_next):
 app.include_router(stocks.router)
 app.include_router(nps_trades.router)
 app.include_router(backtest.router)
-
+app.include_router(investor_recommendation.router)
 
 # ──────────────────────────────────────────────
 # 헬스체크 / 면책 고지
