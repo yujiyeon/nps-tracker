@@ -4,7 +4,8 @@ from zoneinfo import ZoneInfo
 
 import pandas as pd
 from loguru import logger
-from sqlalchemy import text
+from sqlalchemy import MetaData, Table, text
+from sqlalchemy.dialects.postgresql import insert as pg_insert
 
 from db.session import get_session
 from scrapers.backfill import save_daily_ohlcv, sync_stock_master
@@ -23,6 +24,11 @@ def _get_weekdays(from_date: date, to_date: date) -> list[date]:
         current += timedelta(days=1)
 
     return days
+
+
+def _load_table(session, table_name: str) -> Table:
+    metadata = MetaData()
+    return Table(table_name, metadata, autoload_with=session.bind)
 
 
 def _already_collected(session, job_type: str, target_date: date) -> bool:
@@ -142,29 +148,20 @@ def save_investor_daily_trades(session, target_date: date) -> int:
         for _, row in df.iterrows()
     ]
 
-    session.execute(
-        text(
-            """
-            INSERT INTO investor_daily_trades (
-                trade_date, ticker, investor_type, investor_name,
-                net_buy_volume, net_buy_amount,
-                consecutive_buy_days, buy_intensity_pct, buy_amount_per_price,
-                created_at, updated_at
-            ) VALUES (
-                :trade_date, :ticker, :investor_type, :investor_name,
-                :net_buy_volume, :net_buy_amount,
-                :consecutive_buy_days, :buy_intensity_pct, :buy_amount_per_price,
-                :created_at, :updated_at
-            )
-            ON CONFLICT (trade_date, ticker, investor_type) DO UPDATE SET
-                investor_name = EXCLUDED.investor_name,
-                net_buy_volume = EXCLUDED.net_buy_volume,
-                net_buy_amount = EXCLUDED.net_buy_amount,
-                updated_at = EXCLUDED.updated_at
-            """
-        ),
-        records,
+    table = _load_table(session, "investor_daily_trades")
+
+    stmt = pg_insert(table).values(records)
+    stmt = stmt.on_conflict_do_update(
+        index_elements=["trade_date", "ticker", "investor_type"],
+        set_={
+            "investor_name": stmt.excluded.investor_name,
+            "net_buy_volume": stmt.excluded.net_buy_volume,
+            "net_buy_amount": stmt.excluded.net_buy_amount,
+            "updated_at": now,
+        },
     )
+
+    session.execute(stmt)
 
     _log_collection(
         session=session,
