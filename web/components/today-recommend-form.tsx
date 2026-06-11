@@ -31,7 +31,9 @@ const [holdingPeriodDays, setHoldingPeriodDays] = useState(20)
     setError(null)
 
     try {
-      const res = await fetch('http://localhost:8000/api/backtest/recommend', {
+      const API_BASE_URL =process.env.NEXT_PUBLIC_API_URL ?? 'http://localhost:8000'
+      
+      const res = await fetch(`${API_BASE_URL}/api/backtest/recommend`, {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',

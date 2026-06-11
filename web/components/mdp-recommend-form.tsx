@@ -31,7 +31,9 @@ export function MdpRecommendForm() {
     setError(null)
 
     try {
-      const res = await fetch('http://localhost:8000/api/backtest/recommend-mdp', {
+      const API_BASE_URL = process.env.NEXT_PUBLIC_API_URL ?? 'http://localhost:8000'
+      
+      const res = await fetch(`${API_BASE_URL}/api/backtest/recommend-mdp`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
