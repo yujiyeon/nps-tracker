@@ -10,9 +10,6 @@ from pathlib import Path
 from typing import Any
 
 from loguru import logger
-from sqlalchemy.orm import Session
-from datetime import date
-from typing import Any
 
 # backtest 패키지는 프로젝트 루트에 있으므로 sys.path 추가
 _PROJECT_ROOT = Path(__file__).parent.parent.parent
@@ -22,12 +19,8 @@ if str(_PROJECT_ROOT) not in sys.path:
 from backtest.engine import run_backtest, predict_one_day, predict_one_day_mdp  # noqa: E402
 from backtest.strategies import FollowStrategy  # noqa: E402
 
-try:
-    from backtest.dqn_agent import DQNAgent
-    from backtest import rl_state
-    _TORCH_AVAILABLE = True
-except ImportError:
-    _TORCH_AVAILABLE = False
+from backtest.dqn_agent import DQNAgent
+from backtest import rl_state
 
 # DQN 후보 수 (rl_env / engine 과 동일해야 함)
 TOP_K = 50
@@ -76,12 +69,9 @@ def _run_in_background(job_id: str, req_data: dict[str, Any]) -> None:
         from_date = date.fromisoformat(str(req_data["from_date"]))
         to_date = date.fromisoformat(str(req_data["to_date"]))
 
-        if _TORCH_AVAILABLE:
-            agent = DQNAgent(state_size=50 * 5, action_size=50)
-            agent.load(_MODEL_BANDIT)
-            agent.epsilon = 0.0
-        else:
-            agent = None
+        agent = DQNAgent(state_size=50 * 5, action_size=50)
+        agent.load(_MODEL_BANDIT)
+        agent.epsilon = 0.0
 
         result = run_backtest(
             strategy=strategy,
@@ -89,10 +79,8 @@ def _run_in_background(job_id: str, req_data: dict[str, Any]) -> None:
             from_date=from_date,
             to_date=to_date,
             agent=agent,
-            use_dqn=_TORCH_AVAILABLE,
+            use_dqn=True,
         )
-
-        #result = run_backtest(strategy, session, from_date, to_date)
 
         job.update(
             {
@@ -137,19 +125,10 @@ def get_today_recommendation(req_data: dict[str, Any]):
     영향이 없으므로 안전한 기본값으로 채운다.
     """
     from db.session import SessionFactory
-    from backtest.dqn_agent import DQNAgent
-    from backtest.engine import predict_one_day
 
     session = SessionFactory()
 
     try:
-        if not _TORCH_AVAILABLE:
-            return {
-                "message": "DQN 모델을 사용할 수 없는 환경입니다. (torch 미설치)",
-                "recommended_ticker": None,
-                "recommended_name": None,
-            }
-
         strategy = FollowStrategy(
             # 추천에 실제 영향을 주는 후보 필터
             min_consecutive_days=req_data["min_consecutive_days"],
@@ -191,13 +170,6 @@ def get_portfolio_recommendation(req_data: dict[str, Any]):
     session = SessionFactory()
 
     try:
-        if not _TORCH_AVAILABLE:
-            return {
-                "message": "DQN 모델을 사용할 수 없는 환경입니다. (torch 미설치)",
-                "recommended_ticker": None,
-                "recommended_name": None,
-            }
-
         strategy = FollowStrategy(
             min_consecutive_days=req_data["min_consecutive_days"],
             min_net_buy_amount=req_data["min_net_buy_amount"],
