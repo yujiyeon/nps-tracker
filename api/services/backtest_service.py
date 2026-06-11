@@ -144,7 +144,11 @@ def get_today_recommendation(req_data: dict[str, Any]):
 
     try:
         if not _TORCH_AVAILABLE:
-            raise RuntimeError("DQN 모델 사용 불가: torch 미설치 환경입니다.")
+            return {
+                "message": "DQN 모델을 사용할 수 없는 환경입니다. (torch 미설치)",
+                "recommended_ticker": None,
+                "recommended_name": None,
+            }
 
         strategy = FollowStrategy(
             # 추천에 실제 영향을 주는 후보 필터
@@ -188,7 +192,11 @@ def get_portfolio_recommendation(req_data: dict[str, Any]):
 
     try:
         if not _TORCH_AVAILABLE:
-            raise RuntimeError("DQN 모델 사용 불가: torch 미설치 환경입니다.")
+            return {
+                "message": "DQN 모델을 사용할 수 없는 환경입니다. (torch 미설치)",
+                "recommended_ticker": None,
+                "recommended_name": None,
+            }
 
         strategy = FollowStrategy(
             min_consecutive_days=req_data["min_consecutive_days"],
