@@ -23,8 +23,8 @@ def _date_str(target_date: date) -> str:
 
 
 @retry(
-    stop=stop_after_attempt(3),
-    wait=wait_exponential(multiplier=1, min=5, max=60),
+    stop=stop_after_attempt(2),
+    wait=wait_exponential(multiplier=1, min=2, max=10),
     reraise=True,
 )
 def _fetch_net_purchase_by_investor(
@@ -32,21 +32,30 @@ def _fetch_net_purchase_by_investor(
     market: str,
     investor_name: str,
 ) -> pd.DataFrame:
-    return stock.get_market_net_purchases_of_equities_by_ticker(
-        date_str,
-        date_str,
-        market,
-        investor_name,
-    )
+    try:
+        df = stock.get_market_net_purchases_of_equities_by_ticker(
+            date_str,
+            date_str,
+            market,
+            investor_name,
+        )
+
+        if df is None or df.empty:
+            return pd.DataFrame()
+
+        return df
+
+    except ValueError as e:
+        if "Length mismatch" in str(e):
+            logger.debug(
+                f"빈 수급 데이터 스킵: date={date_str}, market={market}, investor={investor_name}"
+            )
+            return pd.DataFrame()
+
+        raise
 
 
 def fetch_all_investor_daily_trades(target_date: date) -> pd.DataFrame:
-    """
-    투자자별 일별 종목 순매수 수집.
-
-    반환 컬럼:
-    ticker, investor_type, investor_name, net_buy_volume, net_buy_amount
-    """
     date_str = _date_str(target_date)
     frames: list[pd.DataFrame] = []
 
@@ -59,7 +68,16 @@ def fetch_all_investor_daily_trades(target_date: date) -> pd.DataFrame:
                     investor_name=investor_name,
                 )
 
-                if df.empty:
+                if df is None or df.empty:
+                    continue
+
+                required_columns = ["순매수거래량", "순매수거래대금"]
+
+                if not all(col in df.columns for col in required_columns):
+                    logger.debug(
+                        f"필수 컬럼 없음 스킵: date={target_date}, market={market}, "
+                        f"investor={investor_name}, columns={list(df.columns)}"
+                    )
                     continue
 
                 df = df.rename(
@@ -82,8 +100,8 @@ def fetch_all_investor_daily_trades(target_date: date) -> pd.DataFrame:
                 frames.append(temp)
 
             except Exception as e:
-                logger.error(
-                    f"투자자 수급 수집 실패: {target_date}, "
+                logger.warning(
+                    f"투자자 수급 수집 스킵: {target_date}, "
                     f"{market}, {investor_name}, error={e}"
                 )
 
