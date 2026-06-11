@@ -76,13 +76,12 @@ def _run_in_background(job_id: str, req_data: dict[str, Any]) -> None:
         from_date = date.fromisoformat(str(req_data["from_date"]))
         to_date = date.fromisoformat(str(req_data["to_date"]))
 
-        agent = DQNAgent(
-            state_size=50 * 5,
-            action_size=50,
-        )
-
-        agent.load(_MODEL_BANDIT)
-        agent.epsilon = 0.0
+        if _TORCH_AVAILABLE:
+            agent = DQNAgent(state_size=50 * 5, action_size=50)
+            agent.load(_MODEL_BANDIT)
+            agent.epsilon = 0.0
+        else:
+            agent = None
 
         result = run_backtest(
             strategy=strategy,
@@ -90,7 +89,7 @@ def _run_in_background(job_id: str, req_data: dict[str, Any]) -> None:
             from_date=from_date,
             to_date=to_date,
             agent=agent,
-            use_dqn=True,
+            use_dqn=_TORCH_AVAILABLE,
         )
 
         #result = run_backtest(strategy, session, from_date, to_date)
@@ -144,6 +143,9 @@ def get_today_recommendation(req_data: dict[str, Any]):
     session = SessionFactory()
 
     try:
+        if not _TORCH_AVAILABLE:
+            raise RuntimeError("DQN 모델 사용 불가: torch 미설치 환경입니다.")
+
         strategy = FollowStrategy(
             # 추천에 실제 영향을 주는 후보 필터
             min_consecutive_days=req_data["min_consecutive_days"],
@@ -158,11 +160,7 @@ def get_today_recommendation(req_data: dict[str, Any]):
             slippage_pct=0.1,
         )
 
-        agent = DQNAgent(
-            state_size=50 * 5,
-            action_size=50,
-        )
-
+        agent = DQNAgent(state_size=50 * 5, action_size=50)
         agent.load(_MODEL_BANDIT)
         agent.epsilon = 0.0
 
@@ -189,6 +187,9 @@ def get_portfolio_recommendation(req_data: dict[str, Any]):
     session = SessionFactory()
 
     try:
+        if not _TORCH_AVAILABLE:
+            raise RuntimeError("DQN 모델 사용 불가: torch 미설치 환경입니다.")
+
         strategy = FollowStrategy(
             min_consecutive_days=req_data["min_consecutive_days"],
             min_net_buy_amount=req_data["min_net_buy_amount"],
