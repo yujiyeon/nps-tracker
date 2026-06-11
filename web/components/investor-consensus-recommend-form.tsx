@@ -1,6 +1,7 @@
 'use client'
 
 import { Fragment, useState } from 'react'
+import { getInvestorRecommendations } from '@/lib/api'
 
 type RecommendationItem = {
   trade_date: string
@@ -111,30 +112,20 @@ export function InvestorConsensusRecommendForm() {
     setError(null)
 
     try {
-      const params = new URLSearchParams()
-      params.set('limit', String(limit))
-
-      if (tradeDate) {
-        params.set('trade_date', tradeDate)
+        const safeLimit = Math.min(50, Math.max(1, limit))
+      
+        const data = await getInvestorRecommendations({
+            trade_date: tradeDate || undefined,
+            limit: safeLimit,
+          }) as RecommendationResponse
+      
+        setLimit(safeLimit)
+        setResult(data)
+      } catch (err) {
+        setError(err instanceof Error ? err.message : '오류가 발생했습니다.')
+      } finally {
+        setIsLoading(false)
       }
-
-      const API_BASE_URL = process.env.NEXT_PUBLIC_API_URL ?? 'http://localhost:8000'
-
-      const res = await fetch(
-        `${API_BASE_URL}/api/investor-recommendations/top?${params.toString()}`
-      )
-
-      if (!res.ok) {
-        throw new Error('기관 컨센서스 추천 종목 조회에 실패했습니다.')
-      }
-
-      const data = await res.json()
-      setResult(data)
-    } catch (err) {
-      setError(err instanceof Error ? err.message : '오류가 발생했습니다.')
-    } finally {
-      setIsLoading(false)
-    }
   }
 
   return (

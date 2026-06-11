@@ -61,3 +61,22 @@ export function runBacktest(req: BacktestRequest): Promise<BacktestResultRespons
 export function getBacktestResult(jobId: string): Promise<BacktestResultResponse> {
   return apiFetch<BacktestResultResponse>(`/api/backtest/${jobId}`)
 }
+
+export function getInvestorRecommendations(params: {
+  trade_date?: string
+  limit?: number
+}) {
+  const qs = new URLSearchParams()
+
+  if (params.trade_date) {
+    qs.set('trade_date', params.trade_date)
+  }
+
+  if (params.limit) {
+    qs.set('limit', String(params.limit))
+  }
+
+  return apiFetch(
+    `/api/investor-recommendations/top?${qs.toString()}`
+  )
+}
