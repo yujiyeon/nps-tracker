@@ -118,7 +118,7 @@ export function InvestorConsensusRecommendForm() {
         params.set('trade_date', tradeDate)
       }
 
-      const API_BASE_URL = process.env.NEXT_PUBLIC_API_BASE_URL ?? ''
+      const API_BASE_URL = process.env.NEXT_PUBLIC_API_URL ?? 'http://localhost:8000'
 
       const res = await fetch(
         `${API_BASE_URL}/api/investor-recommendations/top?${params.toString()}`
