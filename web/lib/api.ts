@@ -76,7 +76,20 @@ export function getInvestorRecommendations(params: {
     qs.set('limit', String(params.limit))
   }
 
-  return apiFetch(
-    `/api/investor-recommendations/top?${qs.toString()}`
-  )
+  // Next.js API route 프록시를 경유 — 브라우저가 백엔드를 직접 호출하지 않아 CORS/내부URL 문제 회피
+  const path = `/api/investor-recommendations/top?${qs.toString()}`
+
+  if (typeof window === 'undefined') {
+    // 서버 사이드: 백엔드 직접 호출
+    return apiFetch(path)
+  }
+
+  // 클라이언트 사이드: Next.js 프록시 경유 (same-origin)
+  return fetch(path).then(async (res) => {
+    if (!res.ok) {
+      const error = await res.json().catch(() => ({ detail: res.statusText }))
+      throw new Error(error.detail ?? `API 오류: ${res.status}`)
+    }
+    return res.json()
+  })
 }
