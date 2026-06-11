@@ -9,9 +9,10 @@ RUN addgroup --system --gid 1001 appgroup && \
 COPY api/requirements.txt ./api/
 RUN pip install --no-cache-dir -r api/requirements.txt
 
-# api/ 와 backtest/ 모두 복사 — backtest_service.py가 ../backtest를 참조
+# api/, backtest/, models/ 복사 — backtest_service.py가 ../backtest, ../models를 참조
 COPY --chown=appuser:appgroup api/ ./api/
 COPY --chown=appuser:appgroup backtest/ ./backtest/
+COPY --chown=appuser:appgroup models/ ./models/
 
 USER appuser
 WORKDIR /app/api
