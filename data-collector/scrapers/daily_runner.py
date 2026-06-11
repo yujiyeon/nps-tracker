@@ -31,6 +31,8 @@ from scrapers.backfill import (
     save_nps_daily_trades,
     sync_stock_master,
 )
+from scrapers.investor_trade_loader import save_investor_daily_trades, recalculate_investor_signals_bulk
+from scrapers.investor_score_calculator import calculate_for_date as calculate_investor_scores
 
 KST = ZoneInfo("Asia/Seoul")
 
@@ -109,7 +111,7 @@ def recalculate_signals_for_date(session: Session, target_date: date) -> None:
 def collect_for_date(target_date: date) -> None:
     """
     특정 날짜의 전체 수집 파이프라인 실행.
-    순서: 종목 마스터 동기화 → OHLCV → NPS 매매 → 시그널 재계산
+    순서: 종목 마스터 → OHLCV → NPS 매매 → 투자자별 수급 → 시그널 재계산 → 기관 추천 점수
     """
     logger.info(f"=== 일별 수집 시작: {target_date} ===")
 
@@ -131,6 +133,19 @@ def collect_for_date(target_date: date) -> None:
     if ohlcv_rows > 0 or nps_rows > 0:
         with get_session() as session:
             recalculate_signals_for_date(session, target_date)
+
+    # 5. 투자자별 수급 수집 (investor_daily_trades)
+    with get_session() as session:
+        investor_rows = save_investor_daily_trades(session, target_date)
+        logger.info(f"투자자별 수급 저장: {investor_rows}행")
+
+    # 6. 투자자별 시그널 재계산 (연속매수일, 매수강도)
+    if investor_rows > 0:
+        with get_session() as session:
+            recalculate_investor_signals_bulk(session)
+
+    # 7. 기관 컨센서스 점수 및 TOP 추천 계산 (daily_top_recommendations)
+    calculate_investor_scores(target_date)
 
     logger.info(f"=== 일별 수집 완료: {target_date} ===")
 
