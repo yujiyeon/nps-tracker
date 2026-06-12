@@ -99,5 +99,9 @@ class DQNAgent:
         torch.save(self.model.state_dict(), path)
 
     def load(self, path):
-        self.model.load_state_dict(torch.load(path))
+        # weights_only=False: 이전 PyTorch로 저장된 모델(FloatStorage 등) 호환
+        # map_location='cpu': GPU 없는 환경(Railway)에서도 로드 가능
+        self.model.load_state_dict(
+            torch.load(path, map_location="cpu", weights_only=False)
+        )
         self.model.eval()

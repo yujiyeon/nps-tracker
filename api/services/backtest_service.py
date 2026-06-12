@@ -25,9 +25,9 @@ from backtest import rl_state
 # DQN 후보 수 (rl_env / engine 과 동일해야 함)
 TOP_K = 50
 
-# 모델 경로 (기존 bandit 모델 / 방향A MDP 모델 — 서로 다른 차원이라 파일 분리)
-_MODEL_BANDIT = "../models/dqn_nps_stock_model.pth"
-_MODEL_MDP = "../models/dqn_nps_portfolio_model.pth"
+# 모델 경로 — 절대 경로로 고정 (CWD와 무관하게 동작)
+_MODEL_BANDIT = str(_PROJECT_ROOT / "models" / "dqn_nps_stock_model.pth")
+_MODEL_MDP = str(_PROJECT_ROOT / "models" / "dqn_nps_portfolio_model.pth")
 
 # db.session은 스레드 실행 시점에 lazy import (모듈 레벨에서 DB 커넥션 생성 방지)
 from services import cache_service
