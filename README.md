@@ -4,16 +4,71 @@
 
 > **데이터 출처 안내**: KRX는 "국민연금" 단독 데이터를 제공하지 않으며 **"연기금 등" 합산 카테고리**로만 공개합니다. 장 마감 후(T+1) 기준 데이터입니다.
 
+🔗 **서비스 URL**: https://gukyeondda.up.railway.app
+
 ---
 
 ## 주요 기능
 
-| 기능 | 설명 |
-|------|------|
-| 일별 매매 동향 | KRX "연기금 등" 일별 순매수 상위 종목 시각화 |
-| 종목 상세 분석 | 특정 종목의 NPS 매매 시계열 차트 |
-| 백테스팅 | "N일 연속 매수 종목을 따라 사면 수익이 났을까?" 전략 검증 |
-| 자동 수집 | 매일 07:00 KST 전 영업일 데이터 자동 수집 |
+| 페이지 | URL | 설명 |
+|--------|-----|------|
+| 매매 동향 | `/` | KRX "연기금 등" 일별 순매수 상위 종목, 연속 매수일수·매수강도 시각화 |
+| 종목 상세 | `/stocks/{ticker}` | 특정 종목의 NPS 매매 시계열 차트 |
+| 백테스팅 | `/backtest` | "N일 연속 매수 종목을 따라 사면 수익이 났을까?" DQN 강화학습 기반 전략 검증 |
+| 오늘의 추천종목 | `/recommend` | DQN(bandit) 및 포트폴리오 강화학습(MDP) 기반 오늘의 추천 |
+| 기관별 종합추천 | `/investor-recommendations` | 기관·외국인·동시매수 점수를 종합한 TOP 50 추천 |
+
+---
+
+## 서비스 접속
+
+| 서비스 | URL |
+|--------|-----|
+| 웹 애플리케이션 | https://gukyeondda.up.railway.app |
+| API (Swagger 문서) | https://gukyeondda.up.railway.app/api-docs |
+
+---
+
+## 화면별 사용 방법
+
+### 매매 동향 (`/`)
+
+장 마감 후(T+1) 수집된 연기금 순매수 상위 종목을 표시합니다.
+
+- **시장 필터**: KOSPI / KOSDAQ 전체 또는 개별 선택
+- **정렬 기준**: 순매수금액 / 연속매수일수 / 매수강도 중 선택
+- 종목명 클릭 시 해당 종목의 시계열 매매 차트로 이동
+
+### 백테스팅 (`/backtest`)
+
+전략 파라미터를 설정하고 과거 데이터로 수익률을 검증합니다.
+
+| 파라미터 | 기본값 | 설명 |
+|----------|--------|------|
+| 시작일 / 종료일 | - | 백테스팅 기간 |
+| 최소 연속 매수일 | 3일 | 연기금이 N일 연속 순매수한 종목만 후보 |
+| 최소 순매수금액 | 10억원 | 일별 순매수금액 하한 |
+| 최소 매수강도 | 0.1% | 순매수금액 ÷ 시가총액 하한 |
+| 보유 기간 | 20영업일 | 매수 후 보유 기간 |
+| 진입 지연일 | 1일 | look-ahead bias 방지 (최소 1) |
+| 최대 동시 보유 | 10종목 | 동시에 보유할 수 있는 최대 종목 수 |
+| 초기 자본 | 1,000만원 | 백테스팅 시작 자본 |
+| 거래 비용 | 0.25% | 수수료 + 세금 + 슬리피지 합산 |
+
+> DQN 강화학습 에이전트가 매일 후보 종목 중 1개를 선택합니다. 결과는 총 수익률, CAGR, MDD, 샤프 비율, 승률 등으로 표시됩니다.
+
+### 오늘의 추천종목 (`/recommend`)
+
+**DQN 추천 (bandit)**: 매매동향 후보 중 DQN이 가장 유망하다고 판단한 종목 1개를 선택합니다.
+
+**포트폴리오 강화학습(MDP) 추천**: 현금·보유종목·평가손익을 상태에 포함한 MDP DQN이 종목을 선택합니다. 모델이 "관망"을 선택하면 추천 없음이 반환될 수 있습니다.
+
+### 기관별 종합추천 (`/investor-recommendations`)
+
+연기금·외국인·기관 투자자의 동시 매수 패턴을 기반으로 점수를 산출하여 TOP 50 종목을 표시합니다.
+
+- 기관 컨센서스 점수, 외국인 점수, 동시매수 기관 수 반영
+- 매일 07:00 KST 자동 업데이트
 
 ---
 
@@ -26,8 +81,8 @@
 | DB | PostgreSQL 16 + TimescaleDB (시계열 최적화) |
 | 캐시 | Redis 7 (API 응답 TTL 1h, 백테스팅 job 상태) |
 | 데이터 수집 | pykrx · OpenDartReader · APScheduler |
-| 백테스팅 | Pandas · NumPy |
-| 인프라 | Docker Compose (로컬) · Railway (배포) |
+| 강화학습 | PyTorch (CPU) · DQN · MDP |
+| 인프라 | Railway (web · api · collector · PostgreSQL · Redis) |
 
 ---
 
@@ -35,122 +90,110 @@
 
 ```
 nps-tracker/
-├── data-collector/     # KRX/DART 데이터 수집 (APScheduler)
+├── data-collector/     # KRX/DART 데이터 수집 (APScheduler, 매일 07:00 KST)
+│   ├── scrapers/       # 수집기 (OHLCV, NPS, 투자자별 수급, 백필)
+│   └── db/             # 스키마 초기화, 세션 팩토리
 ├── api/                # FastAPI 백엔드
-├── backtest/           # 백테스팅 엔진
-├── web/                # Next.js 프론트엔드
-└── docker-compose.yml  # 로컬 개발용 (PostgreSQL + Redis)
+│   ├── routers/        # nps, backtest, stocks, investor_recommendation
+│   └── services/       # 비즈니스 로직, Redis 캐시, 백테스팅 실행
+├── backtest/           # 백테스팅 엔진 + DQN 에이전트
+│   ├── engine.py       # 백테스팅 실행, 추천 로직
+│   ├── dqn_agent.py    # DQN 에이전트 (bandit)
+│   └── rl_state.py     # MDP 상태 정의
+├── models/             # 학습된 DQN 모델 가중치 (.pth)
+└── web/                # Next.js 프론트엔드
+    ├── app/            # App Router 페이지
+    └── components/     # 공통 컴포넌트
 ```
 
 ---
 
-## 로컬 개발 환경
+## 데이터 수집 구조
 
-### 사전 요구사항
+```
+매일 07:00 KST (전 영업일 기준)
+│
+├── 1. 종목 마스터 갱신 (신규 상장/폐지 추적)
+├── 2. OHLCV 수집 (KRX 일별 시가/고가/저가/종가/거래량/시가총액)
+├── 3. NPS 매매 수집 (KRX "연기금 등" 순매수 데이터)
+├── 4. 연속매수일수·매수강도 재계산
+├── 5. 투자자별 수급 수집 (연기금/외국인/기관 등)
+├── 6. 투자자별 시그널 재계산
+└── 7. 기관 컨센서스 점수 계산 → daily_top_recommendations 갱신
+```
 
-- Docker Desktop
-- Python 3.11+
-- Node.js 20+
+---
 
-### 빠른 시작
+## API 엔드포인트
+
+| Method | Endpoint | 설명 |
+|--------|----------|------|
+| GET | `/api/nps/daily` | 일별 연기금 순매수 상위 종목 |
+| GET | `/api/nps/stocks/{ticker}/trades` | 종목별 NPS 매매 시계열 |
+| GET | `/api/nps/stocks/{ticker}/holdings` | 종목별 NPS 5% 이상 보유 공시 |
+| GET | `/api/stocks` | 종목 목록 |
+| GET | `/api/stocks/{ticker}` | 종목 상세 |
+| POST | `/api/backtest` | 백테스팅 실행 요청 (비동기, job_id 반환) |
+| GET | `/api/backtest/{job_id}` | 백테스팅 결과 조회 (폴링) |
+| POST | `/api/backtest/recommend` | DQN(bandit) 오늘의 추천종목 |
+| POST | `/api/backtest/recommend-mdp` | DQN(MDP) 포트폴리오 추천종목 |
+| GET | `/api/investor-recommendations` | 기관 컨센서스 TOP 50 |
+| GET | `/health` | 헬스체크 |
+
+전체 API 명세(Swagger UI): https://gukyeondda.up.railway.app/docs
+
+---
+
+## 배포 구성 (Railway)
+
+| 서비스 | 역할 |
+|--------|------|
+| web | Next.js 프론트엔드 |
+| api | FastAPI 백엔드 |
+| collector | 데이터 수집 스케줄러 (매일 07:00 KST 자동 실행) |
+| PostgreSQL | TimescaleDB 확장 적용 시계열 DB |
+| Redis | API 응답 캐시(TTL 1h) + 백테스팅 job 상태 저장 |
+
+### 환경변수 (Railway Variables)
+
+```
+# api, collector 공통
+DATABASE_URL=postgresql+psycopg2://...@postgres.railway.internal:5432/railway
+REDIS_URL=redis://...@redis.railway.internal:6379
+
+# collector 추가
+DART_API_KEY=...          # DART 공시 수집
+KRX_ID=...                # KRX 데이터포털 ID
+KRX_PW=...                # KRX 데이터포털 PW
+
+# web
+NEXT_PUBLIC_API_URL=https://{api-service}.up.railway.app
+```
+
+---
+
+## 데이터 백필 (초기 구축 또는 DB 재생성 시)
+
+Railway collector 서비스 → **Shell** 탭에서 실행:
 
 ```bash
-# 1. 인프라 실행 (PostgreSQL + Redis)
-docker compose up -d
-
-# 2. 스키마 초기화
-cd data-collector
+# 스키마 초기화 (최초 1회)
 python -m db.init_schema
 
-# 3. 과거 데이터 백필 (최초 1회, 수십 분 소요)
-python -m scrapers.backfill --years 5
+# 과거 데이터 백필 (기간이 길수록 백테스팅 정확도 향상)
+python -m scrapers.backfill --from 2024-01-01 --to 2026-06-11
 
-# 4. API 서버 실행
-cd ../api
-pip install -r requirements.txt
-PYTHONPATH=. uvicorn main:app --reload
-
-# 5. 웹 서버 실행
-cd ../web
-npm install
-npm run dev
-```
-
-### 접속 주소
-
-| 서비스 | URL |
-|-------|-----|
-| 웹 | http://localhost:3000 |
-| API | http://localhost:8000 |
-| API 문서 (Swagger) | http://localhost:8000/docs |
-
-### 환경변수
-
-각 서비스의 `.env.example`을 복사해 `.env`를 생성합니다.
-
-```bash
-# data-collector/.env, api/.env
-DATABASE_URL=postgresql+psycopg2://nps_user:localdevpassword@localhost:5432/nps_tracker
-REDIS_URL=redis://localhost:6379/0
-DART_API_KEY=your_dart_api_key   # DART 공시 수집 시 필요
-
-# api/.env 추가
-ALLOWED_ORIGINS=http://localhost:3000
-
-# web/.env.local
-NEXT_PUBLIC_API_URL=http://localhost:8000
+# 특정 날짜 즉시 수집 (누락 시)
+python -m scrapers.daily_runner --now --date 2026-06-11
 ```
 
 ---
 
-## 데이터 수집 수동 실행
+## 백테스팅 원칙
 
-```bash
-cd data-collector
-
-# 전 영업일 데이터 즉시 수집
-python -m scrapers.daily_runner --now
-
-# 특정 날짜 수집
-python -m scrapers.daily_runner --now --date 2026-05-20
-
-# 스케줄러 상시 가동 (매일 07:00 KST 자동 실행)
-python -m scrapers.daily_runner
-```
-
----
-
-## 테스트
-
-```bash
-# API 통합 테스트
-cd api && pytest tests/ -v
-
-# E2E 테스트 (개발 서버 실행 중이어야 함)
-cd web && npm run test:e2e
-```
-
----
-
-## 배포
-
-각 서비스에 `railway.toml` 설정이 포함되어 있습니다. Railway에서 아래 5개 서비스를 연결합니다.
-
-| Railway 서비스 | 소스 | 비고 |
-|--------------|------|------|
-| db | `timescale/timescaledb:latest-pg16` | 포트 5432 |
-| redis | Railway 플러그인 | 포트 6379 |
-| api | `./api` Dockerfile | |
-| web | `./web` Dockerfile | |
-| collector | `./data-collector` Dockerfile | 스케줄러 상시 가동 |
-
-프로덕션 환경변수는 `.env.production.example` 참고.
-
----
-
-## 상세 문서
-
-기술 사양, 데이터 모델, API 명세, 백테스팅 원칙 등 상세 내용은 [PROJECT_SPEC.md](./PROJECT_SPEC.md)를 참고하세요.
+- **Look-ahead bias 방지**: T일 시그널로 T+1일에 진입 (`entry_lag_days >= 1` 강제)
+- **생존편향 방지**: 상장폐지 종목 포함, 폐지일 도달 시 -100% 손실 처리
+- **거래비용 반영**: 매수 체결가 × (1 + cost%), 매도 × (1 - cost%) 적용
 
 ---
 
