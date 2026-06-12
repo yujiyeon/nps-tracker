@@ -98,7 +98,13 @@ function ScoreBar({ value }: { value: number }) {
   }
 
 export function InvestorConsensusRecommendForm() {
-  const [tradeDate, setTradeDate] = useState('')
+  const [tradeDate, setTradeDate] = useState(() => {
+    const d = new Date()
+    // 월요일(1)이면 -3일, 일요일(0)이면 -2일, 나머지는 -1일
+    const offset = d.getDay() === 1 ? 3 : d.getDay() === 0 ? 2 : 1
+    d.setDate(d.getDate() - offset)
+    return d.toLocaleDateString('en-CA') // YYYY-MM-DD
+  })
   const [limit, setLimit] = useState(50)
   const [result, setResult] = useState<RecommendationResponse | null>(null)
   const [isLoading, setIsLoading] = useState(false)
