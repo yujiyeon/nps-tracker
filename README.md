@@ -25,8 +25,8 @@
 | 서비스 | URL |
 |--------|-----|
 | 웹 애플리케이션 | https://gukyeondda.up.railway.app |
-
-> API Swagger 문서(`/docs`)는 Railway 대시보드 → api 서비스 URL 에서 접근할 수 있습니다.
+| API 문서 (Swagger UI) | https://gukyeondda.up.railway.app/docs |
+| API 문서 (ReDoc) | https://gukyeondda.up.railway.app/redoc |
 
 ---
 
@@ -141,7 +141,7 @@ nps-tracker/
 | GET | `/api/investor-recommendations` | 기관 컨센서스 TOP 50 |
 | GET | `/health` | 헬스체크 |
 
-전체 API 명세(Swagger UI): Railway 대시보드 → api 서비스 URL → `/docs`
+전체 API 명세(Swagger UI): https://gukyeondda.up.railway.app/docs
 
 ---
 
